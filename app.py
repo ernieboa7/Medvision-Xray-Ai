@@ -115,7 +115,7 @@ if uploaded_file is not None:
         if label == "PNEUMONIA":
             st.error("PNEUMONIA DETECTED")
             st.info(
-            "⚠️ This AI model suggests possible signs of pneumonia. "
+            "⚠️ This ML model suggests possible signs of pneumonia. "
             "Please consult a qualified medical professional for proper evaluation and diagnosis."
             )
 
@@ -131,7 +131,7 @@ if uploaded_file is not None:
         elif label == "NORMAL":
             st.success("NORMAL")
             st.info(
-                    "No significant signs of pneumonia detected by this AI model. "
+                    "No significant signs of pneumonia detected by this ML model. "
                     "If symptoms persist, please consult a healthcare provider."
                     )
 
