@@ -8,25 +8,36 @@ from tensorflow.keras.applications.resnet50 import preprocess_input
 # --------------------------------------------------
 # Page Config
 # --------------------------------------------------
-st.set_page_config(page_title="MedVision AI", page_icon="🩺", layout="wide")
 
-# --------------------------------------------------
-# Load External CSS
-# --------------------------------------------------
-def load_css():
-    with open("styles/style.css") as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-load_css()
+st.set_page_config(page_title="MedVision AI", page_icon="🩺")
 
-# --------------------------------------------------
-# Header Section
-# --------------------------------------------------
+# -----------------------------------------
+# Professional Header (Inline Styled)
+# -----------------------------------------
 st.markdown("""
-<div class="medvision-header">
-    <h1>🩺 MedVision AI</h1>
-    <p>AI-Powered Chest X-ray Pneumonia Detection</p>
-    <small>Educational use only. Not a medical diagnosis.</small>
+<div style="
+    background: linear-gradient(135deg, #1f4e79, #2c7be5);
+    padding: 2rem;
+    border-radius: 15px;
+    text-align: center;
+    color: white;
+    box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+    margin-bottom: 1.5rem;
+">
+    <h1 style="margin-bottom: 0.5rem;">
+        🩺 MedVision - X-ray Diagnosis Demo
+    </h1>
+    <p style="
+        background-color: rgba(255,255,255,0.15);
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        font-size: 14px;
+        margin-top: 0.5rem;
+    ">
+        Educational use only. Not medical diagnosis.
+    </p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -45,16 +56,27 @@ def load_model():
 model = load_model()
 
 # --------------------------------------------------
-# Grad-CAM
+# SAFE Grad-CAM (Graph connected version)
 # --------------------------------------------------
+
 def make_gradcam_heatmap(img_array, model):
+
+    # 1 Get ResNet backbone
     base_model = model.get_layer("resnet50")
+
+    # 2 Get last conv layer
     last_conv_layer = base_model.get_layer("conv5_block3_out")
 
+    # 3 Forward pass manually through backbone
     with tf.GradientTape() as tape:
+
+        # Pass through backbone ONLY
         conv_outputs = base_model(img_array, training=False)
+
+        # Watch conv outputs
         tape.watch(conv_outputs)
 
+        # Now manually pass through classifier head
         x = conv_outputs
         x = model.get_layer("global_average_pooling2d")(x)
         x = model.get_layer("batch_normalization")(x)
@@ -64,7 +86,9 @@ def make_gradcam_heatmap(img_array, model):
 
         loss = predictions[:, 0]
 
+    # 4 Compute gradients
     grads = tape.gradient(loss, conv_outputs)
+
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
     conv_outputs = conv_outputs[0]
@@ -75,14 +99,11 @@ def make_gradcam_heatmap(img_array, model):
     heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-8)
 
     return heatmap.numpy()
-
 # --------------------------------------------------
-# Main Card Layout
+# Upload
 # --------------------------------------------------
-st.markdown('<div class="main-card">', unsafe_allow_html=True)
-
 uploaded_file = st.file_uploader(
-    "Upload Chest X-ray Image",
+    "Upload X-ray image",
     type=["jpg", "jpeg", "png"]
 )
 
@@ -91,10 +112,7 @@ if uploaded_file is not None:
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.image(img, caption="Uploaded Image", use_column_width=True)
+    st.image(img, caption="Uploaded Image", width=400)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     if np.std(gray) < 10:
@@ -105,10 +123,9 @@ if uploaded_file is not None:
     img_array = preprocess_input(img_resized.astype("float32"))
     img_array = np.expand_dims(img_array, axis=0)
 
-    if st.button("Run AI Diagnosis"):
+    if st.button("Predict"):
 
-        with st.spinner("Analyzing X-ray..."):
-            prediction = float(model.predict(img_array, verbose=0)[0][0])
+        prediction = float(model.predict(img_array, verbose=0)[0][0])
 
         if prediction > 0.8:
             label = "PNEUMONIA"
@@ -120,28 +137,47 @@ if uploaded_file is not None:
             label = "UNCERTAIN"
             confidence = abs(prediction - 0.5) * 2
 
-        with col2:
-            st.subheader("Diagnosis Result")
+        st.subheader("Prediction Result")
 
-            if label == "PNEUMONIA":
-                st.error("Pneumonia Detected")
-            elif label == "NORMAL":
-                st.success("Normal")
-            else:
-                st.warning("Uncertain Result")
-
-            st.markdown(
-                f'<div class="confidence-box">Confidence: {confidence*100:.2f}%</div>',
-                unsafe_allow_html=True
+        
+        if label == "PNEUMONIA":
+            st.error("PNEUMONIA DETECTED")
+            st.info(
+            "⚠️ This ML model suggests possible signs of pneumonia. "
+            "Please consult a qualified medical professional for proper evaluation and diagnosis."
             )
+
+            st.markdown("### Suggested Reading")
+            st.markdown(
+                        """
+                        - [WHO – Pneumonia Overview](https://www.who.int/news-room/fact-sheets/detail/pneumonia)
+                        - [CDC – Pneumonia Information](https://www.cdc.gov/pneumonia/index.html)
+                        - [Mayo Clinic – Pneumonia Symptoms & Treatment](https://www.mayoclinic.org/diseases-conditions/pneumonia/symptoms-causes/syc-20354204)
+                        """
+        )
+
+        elif label == "NORMAL":
+            st.success("NORMAL")
+            st.info(
+                    "No significant signs of pneumonia detected by this ML model. "
+                    "If symptoms persist, please consult a healthcare provider."
+                    )
+
+        else:
+            st.warning("UNCERTAIN RESULT")
+            st.info(
+                    "The model is not confident in this prediction. "
+                    "Consider retesting with a clearer image or consult a medical professional."
+                    )
+        st.write(f"Confidence: {confidence*100:.2f}%")
 
         # Grad-CAM
         heatmap = make_gradcam_heatmap(img_array, model)
+
         heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
         heatmap = np.uint8(255 * heatmap)
         heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+
         superimposed = cv2.addWeighted(img, 0.6, heatmap, 0.4, 0)
 
-        st.image(superimposed, caption="Grad-CAM Visualization", use_column_width=True)
-
-st.markdown('</div>', unsafe_allow_html=True)
+        st.image(superimposed, caption="Grad-CAM Visualization")
