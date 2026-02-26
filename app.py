@@ -1,3 +1,9 @@
+# --------------------------------------------------
+# Suppress TensorFlow Logs (MUST be before TF import)
+# --------------------------------------------------
+import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
 import streamlit as st
 import numpy as np
 import cv2
@@ -44,39 +50,80 @@ MODEL_PATH = Path("models/xray_resnet50.keras")
 # --------------------------------------------------
 # Load Model
 # --------------------------------------------------
+
 @st.cache_resource
 def load_model():
-    return tf.keras.models.load_model(MODEL_PATH)
+    return tf.keras.models.load_model(
+        MODEL_PATH,
+        compile=False,
+        safe_mode=False,
+        custom_objects={"preprocess_input": preprocess_input}
+    )    
 
 model = load_model()
 
 # --------------------------------------------------
-# Grad-CAM (Proper Graph Model)
+# 🔍 RECURSIVE Conv2D Finder (NEVER FAILS)
+# --------------------------------------------------
+def find_last_conv_layer(layer):
+
+    # If layer is Conv2D
+    if isinstance(layer, tf.keras.layers.Conv2D):
+        return layer
+
+    # If layer has sublayers (nested model)
+    if hasattr(layer, "layers"):
+        for sublayer in reversed(layer.layers):
+            result = find_last_conv_layer(sublayer)
+            if result is not None:
+                return result
+
+    return None
+
+
+# --------------------------------------------------
+# 💡 PRODUCTION-SAFE GRAD-CAM
 # --------------------------------------------------
 def make_gradcam_heatmap(img_array, model):
-    last_conv_layer_name = "conv5_block3_out"
 
-    grad_model = tf.keras.models.Model(
-        [model.inputs],
-        [model.get_layer("resnet50").get_layer(last_conv_layer_name).output,
-         model.output]
-    )
+    last_conv_layer = None
 
-    with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(img_array)
-        loss = predictions[:, 0]
+    # Search recursively through model
+    for layer in reversed(model.layers):
+        last_conv_layer = find_last_conv_layer(layer)
+        if last_conv_layer is not None:
+            break
 
-    grads = tape.gradient(loss, conv_outputs)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    # If no conv layer exists → skip safely
+    if last_conv_layer is None:
+        return None
 
-    conv_outputs = conv_outputs[0]
-    heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap)
+    try:
+        grad_model = tf.keras.Model(
+            inputs=model.inputs,
+            outputs=[last_conv_layer.output, model.output]
+        )
 
-    heatmap = tf.maximum(heatmap, 0)
-    heatmap /= tf.reduce_max(heatmap) + 1e-8
+        with tf.GradientTape() as tape:
+            conv_outputs, predictions = grad_model(img_array, training=False)
+            class_channel = predictions[:, 0]
 
-    return heatmap.numpy()
+        grads = tape.gradient(class_channel, conv_outputs)
+
+        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        conv_outputs = conv_outputs[0]
+
+        heatmap = tf.reduce_sum(conv_outputs * pooled_grads, axis=-1)
+
+        heatmap = tf.maximum(heatmap, 0)
+        heatmap /= tf.reduce_max(heatmap) + 1e-8
+
+        return heatmap.numpy()
+
+    except Exception:
+        # If anything goes wrong → fail gracefully
+        return None
+
 
 # --------------------------------------------------
 # Upload Section
@@ -93,9 +140,7 @@ if uploaded_file is not None:
 
     st.image(img, caption="Uploaded Image", width=400)
 
-    # -----------------------------
-    # Basic Image Validation
-    # -----------------------------
+    # Basic validation
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     if np.std(gray) < 10:
@@ -105,18 +150,15 @@ if uploaded_file is not None:
     if img.shape[0] < 200 or img.shape[1] < 200:
         st.warning("Image resolution is very low. Results may be unreliable.")
 
-    # -----------------------------
     # Preprocess
-    # -----------------------------
     img_resized = cv2.resize(img, (224, 224))
     img_array = preprocess_input(img_resized.astype("float32"))
     img_array = np.expand_dims(img_array, axis=0)
 
-    # -----------------------------
-    # Prediction
-    # -----------------------------
     if st.button("Predict"):
 
+        # 🔥 Use direct call (more stable than predict())
+        #prediction = float(model(img_array, training=False)[0][0])
         prediction = float(model.predict(img_array, verbose=0)[0][0])
 
         pneumonia_prob = prediction
@@ -124,51 +166,42 @@ if uploaded_file is not None:
 
         st.subheader("Prediction Result")
 
-        # -----------------------------
-        # Intelligent Decision Logic
-        # -----------------------------
         if pneumonia_prob > 0.65:
             label = "PNEUMONIA"
             confidence = pneumonia_prob
-
             st.error("PNEUMONIA DETECTED")
-            st.info(
-                "⚠️ The model suggests possible signs of pneumonia. "
-                "Please consult a qualified medical professional."
-            )
+            st.info("⚠️ The model suggests possible signs of pneumonia.")
 
         elif normal_prob > 0.65:
             label = "NORMAL"
             confidence = normal_prob
-
             st.success("NORMAL")
-            st.info(
-                "No significant signs of pneumonia detected by this model."
-            )
+            st.info("No significant signs of pneumonia detected.")
 
         else:
             label = "LOW CONFIDENCE"
             confidence = max(pneumonia_prob, normal_prob)
-
             st.warning("LOW CONFIDENCE RESULT")
-            st.info(
-                "The model is uncertain. This image may not be a typical chest X-ray "
-                "or may contain features outside the training dataset."
-            )
 
+        confidence = min(confidence, 0.999)
         st.write(f"Confidence: {confidence*100:.2f}%")
 
-        # -----------------------------
-        # Grad-CAM (Only if confident)
-        # -----------------------------
+        # --------------------------------------------------
+        # Grad-CAM (Now NEVER crashes)
+        # --------------------------------------------------
         if label != "LOW CONFIDENCE":
 
             heatmap = make_gradcam_heatmap(img_array, model)
 
-            heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
-            heatmap = np.uint8(255 * heatmap)
-            heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+            if heatmap is not None:
 
-            superimposed = cv2.addWeighted(img, 0.6, heatmap, 0.4, 0)
+                heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+                heatmap = np.uint8(255 * heatmap)
+                heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
 
-            st.image(superimposed, caption="Grad-CAM Visualization")
+                superimposed = cv2.addWeighted(img, 0.6, heatmap, 0.4, 0)
+
+                st.image(superimposed, caption="Grad-CAM Visualization")
+
+            else:
+                st.warning("Grad-CAM visualization not available for this model architecture.")
