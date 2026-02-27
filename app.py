@@ -45,7 +45,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-MODEL_PATH = Path("models/xray_resnet50.keras")
+MODEL_PATH = Path("models/xray_resnet50_clean.keras")
 
 # --------------------------------------------------
 # Load Model
